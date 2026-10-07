@@ -1919,6 +1919,18 @@ menuconfig ARMV8_DEPRECATED
 
 	  If unsure, say Y
 
+config ARM64_RCPC_EMULATION
+	bool "Emulate the RCpc acquire loads (FEAT_LRCPC)"
+	default y
+	help
+	  A CPU without FEAT_LRCPC takes an undefined instruction exception
+	  on the LDAPR and LDAPUR families of acquire loads, which a binary
+	  built for a newer target can contain. Say Y here to carry such a
+	  load out in software, with the permissions of the task that
+	  faulted, instead of delivering an undefined instruction exception.
+
+	  If unsure, say Y
+
 if ARMV8_DEPRECATED
 
 config SWP_EMULATION

@@ -22,6 +22,15 @@ try_emulate_armv8_deprecated(struct pt_regs *regs, u32 insn)
 }
 #endif /* CONFIG_ARMV8_DEPRECATED */
 
+#ifdef CONFIG_ARM64_RCPC_EMULATION
+bool try_emulate_rcpc(struct pt_regs *regs, u32 insn);
+#else
+static inline bool try_emulate_rcpc(struct pt_regs *regs, u32 insn)
+{
+	return false;
+}
+#endif /* CONFIG_ARM64_RCPC_EMULATION */
+
 void force_signal_inject(int signal, int code, unsigned long address, unsigned long err);
 void arm64_notify_segfault(unsigned long addr);
 void arm64_force_sig_fault(int signo, int code, unsigned long far, const char *str);
