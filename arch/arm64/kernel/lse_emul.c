@@ -15,14 +15,18 @@
 
 #include <linux/atomic.h>
 #include <linux/debugfs.h>
+#include <linux/hash.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/moduleparam.h>
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
 
 #include <asm/insn-def.h>
 #include <asm/ptrace.h>
 #include <asm/traps.h>
+
+#include "lse_block_code.h"
 
 /*
  *   size 111000 A R 1 Rs opc 00 Rn Rt
@@ -65,7 +69,33 @@ struct lse_insn {
 	u8		rn;
 };
 
+/*
+ * Whether a site that keeps trapping is sent to a block that makes the
+ * operation without an exception, and after how many traps: lse_rewrite=2 on
+ * the command line, or a write to <debugfs>/lse_emul/rewrite. Zero is a block
+ * at the first trap, and a count below zero is no block at all
+ */
+static int lse_rewrite = 2;
+core_param(lse_rewrite, lse_rewrite, int, 0644);
+
+/* The bytes a block saves its two registers in */
+#define LSE_FRAME_BYTES		(2 * sizeof(u64))
+
+/* The sites that have trapped, as far as they are worth counting */
+#define LSE_HOT_SLOTS		256
+
+struct lse_hot {
+	unsigned long	site;
+	unsigned int	traps;
+};
+
+static DEFINE_PER_CPU(struct lse_hot[LSE_HOT_SLOTS], lse_hot);
+
+static void lse_block_try(struct pt_regs *regs, const struct lse_insn *lse,
+			  u32 insn);
+
 static atomic_long_t lse_emul_traps;
+static atomic_long_t lse_emul_blocks;
 static atomic_long_t lse_sp_zero;
 static atomic_long_t lse_sp_misaligned;
 static atomic_long_t lse_sp_unwritable;
@@ -261,7 +291,7 @@ static u64 lse_apply(enum lse_op op, u8 size, u64 old, u64 operand)
 
 /* The compare and swap, which writes the old value back to its comparand */
 static bool lse_cas(struct pt_regs *regs, const struct lse_insn *lse,
-		    unsigned long addr)
+		    unsigned long addr, u32 insn)
 {
 	u64 comparand, value, old;
 
@@ -278,6 +308,7 @@ static bool lse_cas(struct pt_regs *regs, const struct lse_insn *lse,
 	if (lse->rs != 31)
 		regs->regs[lse->rs] = old;
 
+	lse_block_try(regs, lse, insn);
 	arm64_skip_faulting_instruction(regs, AARCH64_INSN_SIZE);
 
 	return true;
@@ -307,30 +338,124 @@ static bool lse_writable(unsigned long addr)
 	return writable;
 }
 
+enum lse_stack {
+	LSE_STACK_OK,
+	LSE_STACK_ZERO,
+	LSE_STACK_MISALIGNED,
+	LSE_STACK_UNWRITABLE,
+};
+
 /*
- * Counts what the stack pointer of the task says about the stack being usable
- * where it was stopped: it may be zero, unaligned where the architecture
- * requires it to be aligned, or point into no mapping that can be written
+ * What the stack pointer of the task says about the stack being usable where
+ * it was stopped: it may be zero, unaligned where the architecture requires it
+ * to be aligned, or point into no mapping a frame can be pushed on
  */
-static void lse_note_stack(struct pt_regs *regs)
+static enum lse_stack lse_stack_state(struct pt_regs *regs)
 {
 	struct vm_area_struct *vma;
+	enum lse_stack state;
 
-	if (!regs->sp) {
-		atomic_long_inc(&lse_sp_zero);
-		return;
-	}
+	if (!regs->sp)
+		return LSE_STACK_ZERO;
 
-	if (regs->sp & 15) {
-		atomic_long_inc(&lse_sp_misaligned);
-		return;
-	}
+	if (regs->sp & 15)
+		return LSE_STACK_MISALIGNED;
 
 	mmap_read_lock(current->mm);
 	vma = vma_lookup(current->mm, regs->sp - 1);
-	if (!vma || !(vma->vm_flags & (VM_WRITE | VM_GROWSDOWN)))
-		atomic_long_inc(&lse_sp_unwritable);
+	state = vma && (vma->vm_flags & (VM_WRITE | VM_GROWSDOWN)) ?
+		LSE_STACK_OK : LSE_STACK_UNWRITABLE;
 	mmap_read_unlock(current->mm);
+
+	return state;
+}
+
+/* What the stack looked like where the task was stopped, for the count of it */
+static void lse_note_stack(struct pt_regs *regs)
+{
+	switch (lse_stack_state(regs)) {
+	case LSE_STACK_ZERO:
+		atomic_long_inc(&lse_sp_zero);
+		break;
+	case LSE_STACK_MISALIGNED:
+		atomic_long_inc(&lse_sp_misaligned);
+		break;
+	case LSE_STACK_UNWRITABLE:
+		atomic_long_inc(&lse_sp_unwritable);
+		break;
+	default:
+		break;
+	}
+}
+
+/*
+ * Whether the site has trapped often enough to be worth a block, which is
+ * counted where it is cheap: a slot of the running processor's own table, with
+ * a site that has not been seen before taking the slot over. A count that
+ * belongs to another task's site only makes a block come sooner
+ */
+static bool lse_hot_site(unsigned long site)
+{
+	struct lse_hot *hot, *slot;
+	bool ready;
+
+	preempt_disable();
+	hot = this_cpu_ptr(lse_hot);
+	slot = &hot[hash_long(site, ilog2(LSE_HOT_SLOTS))];
+	if (slot->site != site) {
+		slot->site = site;
+		slot->traps = 0;
+	}
+	slot->traps++;
+	ready = slot->traps >= (unsigned int)lse_rewrite;
+	preempt_enable();
+
+	return ready;
+}
+
+/* The two registers a block works in, which the instruction itself does not */
+static void lse_scratch(const struct lse_insn *lse, u8 *first, u8 *second)
+{
+	u8 picked[2];
+	unsigned int n = 0;
+
+	for (u8 r = 0; r < 31 && n < ARRAY_SIZE(picked); r++) {
+		if (r == lse->rs || r == lse->rt || r == lse->rn)
+			continue;
+		picked[n++] = r;
+	}
+
+	*first = picked[0];
+	*second = picked[1];
+}
+
+/*
+ * The site has trapped enough to be worth a block, which is put in place where
+ * one can be made for it. The operation is carried out here either way, so
+ * nothing depends on whether one was
+ */
+static void lse_block_try(struct pt_regs *regs, const struct lse_insn *lse,
+			  u32 insn)
+{
+	unsigned long site = instruction_pointer(regs);
+	u32 code[LSE_BLOCK_CODE_MAX];
+	u8 first, second;
+	unsigned int count;
+
+	if (lse_rewrite < 0 || !lse_hot_site(site))
+		return;
+	if (lse_stack_state(regs) != LSE_STACK_OK)
+		return;
+
+	lse_scratch(lse, &first, &second);
+	count = lse_block_code(lse->op, lse->size, lse->rs, lse->rt, lse->rn,
+			       first, second, site, code);
+	if (!count)
+		return;
+
+	if (lse_block_install(regs, insn, site, BIT(first) | BIT(second),
+			      LSE_FRAME_BYTES, code, count))
+		atomic_long_inc(&lse_emul_blocks);
 }
 
 /*
@@ -381,7 +506,7 @@ bool try_emulate_lse(struct pt_regs *regs, u32 insn)
 	addr = (unsigned long)__uaccess_mask_ptr((void __user *)addr);
 
 	if (lse.op == LSE_CAS)
-		return lse_cas(regs, &lse, addr);
+		return lse_cas(regs, &lse, addr, insn);
 
 	/* Rs=31 is the zero register */
 	operand = lse.rs == 31 ? 0 : regs->regs[lse.rs];
@@ -411,6 +536,7 @@ bool try_emulate_lse(struct pt_regs *regs, u32 insn)
 	if (lse.rt != 31)
 		regs->regs[lse.rt] = value;
 
+	lse_block_try(regs, &lse, insn);
 	arm64_skip_faulting_instruction(regs, AARCH64_INSN_SIZE);
 
 	return true;
@@ -424,10 +550,28 @@ static int lse_emul_stats_show(struct seq_file *m, void *unused)
 		   atomic_long_read(&lse_sp_misaligned));
 	seq_printf(m, "sp_unwritable %lu\n",
 		   atomic_long_read(&lse_sp_unwritable));
+	seq_printf(m, "blocks %lu\n", atomic_long_read(&lse_emul_blocks));
+	seq_printf(m, "block_faults %lu\n", lse_block_fault_count());
 
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(lse_emul_stats);
+
+static int lse_emul_rewrite_get(void *data, u64 *val)
+{
+	*val = lse_rewrite;
+
+	return 0;
+}
+
+static int lse_emul_rewrite_set(void *data, u64 val)
+{
+	lse_rewrite = val;
+
+	return 0;
+}
+DEFINE_DEBUGFS_ATTRIBUTE(lse_emul_rewrite_fops, lse_emul_rewrite_get,
+			 lse_emul_rewrite_set, "%llu\n");
 
 static int __init lse_emul_init(void)
 {
@@ -435,6 +579,7 @@ static int __init lse_emul_init(void)
 
 	dir = debugfs_create_dir("lse_emul", NULL);
 	debugfs_create_file("stats", 0444, dir, NULL, &lse_emul_stats_fops);
+	debugfs_create_file("rewrite", 0644, dir, NULL, &lse_emul_rewrite_fops);
 
 	return 0;
 }

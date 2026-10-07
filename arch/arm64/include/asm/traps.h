@@ -33,8 +33,18 @@ static inline bool try_emulate_rcpc(struct pt_regs *regs, u32 insn)
 
 #ifdef CONFIG_ARM64_LSE_EMULATION
 bool try_emulate_lse(struct pt_regs *regs, u32 insn);
+bool lse_block_install(struct pt_regs *regs, u32 insn, unsigned long site,
+		       unsigned int saved, unsigned int frame,
+		       const u32 *code, unsigned int count);
+bool lse_block_fault(unsigned long esr, struct pt_regs *regs);
+unsigned long lse_block_fault_count(void);
 #else
 static inline bool try_emulate_lse(struct pt_regs *regs, u32 insn)
+{
+	return false;
+}
+
+static inline bool lse_block_fault(unsigned long esr, struct pt_regs *regs)
 {
 	return false;
 }

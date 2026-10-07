@@ -986,6 +986,13 @@ void do_mem_abort(unsigned long far, unsigned long esr, struct pt_regs *regs)
 	const struct fault_info *inf = esr_to_fault_info(esr);
 	unsigned long addr = untagged_addr(far);
 
+	/*
+	 * A fault from the block an LSE atomic site was replaced with: the
+	 * operation has not been made, and is made here in place of it
+	 */
+	if (lse_block_fault(esr, regs))
+		return;
+
 	if (!inf->fn(far, esr, regs))
 		return;
 
