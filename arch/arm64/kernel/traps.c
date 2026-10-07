@@ -472,6 +472,9 @@ void do_el0_undef(struct pt_regs *regs, unsigned long esr)
 	if (try_emulate_rcpc(regs, insn))
 		return;
 
+	if (try_emulate_lse(regs, insn))
+		return;
+
 out_err:
 	force_signal_inject(SIGILL, ILL_ILLOPC, regs->pc, 0);
 }

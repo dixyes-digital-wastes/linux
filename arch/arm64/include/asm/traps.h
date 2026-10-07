@@ -31,6 +31,15 @@ static inline bool try_emulate_rcpc(struct pt_regs *regs, u32 insn)
 }
 #endif /* CONFIG_ARM64_RCPC_EMULATION */
 
+#ifdef CONFIG_ARM64_LSE_EMULATION
+bool try_emulate_lse(struct pt_regs *regs, u32 insn);
+#else
+static inline bool try_emulate_lse(struct pt_regs *regs, u32 insn)
+{
+	return false;
+}
+#endif /* CONFIG_ARM64_LSE_EMULATION */
+
 /* shared between the emulations of the undefined instructions at EL0 */
 extern bool undef_unaligned_ok;
 bool undef_aligned(u32 insn, unsigned long addr);

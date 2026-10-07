@@ -1935,6 +1935,20 @@ config ARM64_RCPC_EMULATION
 
 	  If unsure, say Y
 
+config ARM64_LSE_EMULATION
+	bool "Emulate the LSE atomic instructions (FEAT_LSE)"
+	default y
+	select ARM64_UNDEF_EMULATION
+	help
+	  A CPU without FEAT_LSE takes an undefined instruction exception on
+	  the atomic memory operations, the swaps and the compare and swaps,
+	  which a binary built for a newer target can contain. Say Y here to
+	  carry such an operation out in software, with the permissions of
+	  the task that faulted, instead of delivering an undefined
+	  instruction exception.
+
+	  If unsure, say Y.
+
 if ARMV8_DEPRECATED
 
 config SWP_EMULATION
