@@ -6,7 +6,8 @@
  * An emulation that puts something else in the place of the instruction
  * writes into the task's own text, and one that carries the instruction out
  * has to report the faults it cannot resolve the way the instruction would
- * have
+ * have. A processor that ran a line of that text which is no longer what the
+ * site holds is given the site again
  */
 
 #include <linux/highmem.h>
@@ -16,6 +17,7 @@
 
 #include <asm/cacheflush.h>
 #include <asm/cpufeature.h>
+#include <asm/insn-def.h>
 #include <asm/ptrace.h>
 #include <asm/sysreg.h>
 #include <asm/traps.h>
@@ -131,6 +133,18 @@ bool undef_patch_text(struct pt_regs *regs, u32 insn, u32 replacement)
 	}
 
 	return patched;
+}
+
+/*
+ * Leaves the site to run again for a processor whose fetch of it was stale: the
+ * line it ran is not what the site holds now, so that line is dropped here and
+ * the instruction is left to be fetched again
+ */
+void undef_run_again(struct pt_regs *regs)
+{
+	unsigned long pc = instruction_pointer(regs);
+
+	caches_clean_inval_user_pou(pc, pc + AARCH64_INSN_SIZE);
 }
 
 static int __init undef_patch_init(void)

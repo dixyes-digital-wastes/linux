@@ -96,6 +96,7 @@ static void lse_block_try(struct pt_regs *regs, const struct lse_insn *lse,
 
 static atomic_long_t lse_emul_traps;
 static atomic_long_t lse_emul_blocks;
+static atomic_long_t lse_emul_stale;
 static atomic_long_t lse_sp_zero;
 static atomic_long_t lse_sp_misaligned;
 static atomic_long_t lse_sp_unwritable;
@@ -474,8 +475,22 @@ bool try_emulate_lse(struct pt_regs *regs, u32 insn)
 	if (compat_user_mode(regs))
 		return false;
 
-	if (!lse_decode(insn, &lse))
+	if (!lse_decode(insn, &lse)) {
+		/*
+		 * The branch a block rewrite puts at a site, which cannot trap:
+		 * this processor ran the operation that was there before, and
+		 * what it ran is not what the site holds now
+		 */
+		if ((insn & LSE_B_MASK) == LSE_B) {
+			atomic_long_inc(&lse_emul_traps);
+			atomic_long_inc(&lse_emul_stale);
+			undef_run_again(regs);
+
+			return true;
+		}
+
 		return false;
+	}
 
 	atomic_long_inc(&lse_emul_traps);
 
@@ -551,6 +566,7 @@ static int lse_emul_stats_show(struct seq_file *m, void *unused)
 	seq_printf(m, "sp_unwritable %lu\n",
 		   atomic_long_read(&lse_sp_unwritable));
 	seq_printf(m, "blocks %lu\n", atomic_long_read(&lse_emul_blocks));
+	seq_printf(m, "stale %lu\n", atomic_long_read(&lse_emul_stale));
 	seq_printf(m, "block_faults %lu\n", lse_block_fault_count());
 
 	return 0;

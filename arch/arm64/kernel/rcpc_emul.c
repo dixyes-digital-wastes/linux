@@ -60,6 +60,7 @@ core_param(rcpc_rewrite, rcpc_rewrite_enabled, bool, 0644);
 
 static atomic_long_t rcpc_emul_traps;
 static atomic_long_t rcpc_emul_rewrites;
+static atomic_long_t rcpc_emul_stale;
 
 /* The unscaled form's imm9, bits [20:12], sign extended */
 static s64 rcpc_imm9(u32 insn)
@@ -140,8 +141,20 @@ bool try_emulate_rcpc(struct pt_regs *regs, u32 insn)
 		addr = rcpc_base(regs, insn);
 	else if ((insn & RCPC_LDAPUR_MASK) == RCPC_LDAPUR_VALUE)
 		addr = rcpc_base(regs, insn) + rcpc_imm9(insn);
-	else
+	else if ((insn & RCPC_LDAPR_MASK) == RCPC_LDAR_VALUE) {
+		/*
+		 * The acquire load a rewrite puts at a site, which cannot trap:
+		 * this processor ran the load that was there before, and what
+		 * it ran is not what the site holds now
+		 */
+		atomic_long_inc(&rcpc_emul_traps);
+		atomic_long_inc(&rcpc_emul_stale);
+		undef_run_again(regs);
+
+		return true;
+	} else {
 		return false;
+	}
 
 	atomic_long_inc(&rcpc_emul_traps);
 
@@ -187,6 +200,7 @@ static int rcpc_emul_stats_show(struct seq_file *m, void *unused)
 {
 	seq_printf(m, "traps %lu\n", atomic_long_read(&rcpc_emul_traps));
 	seq_printf(m, "rewrites %lu\n", atomic_long_read(&rcpc_emul_rewrites));
+	seq_printf(m, "stale %lu\n", atomic_long_read(&rcpc_emul_stale));
 
 	return 0;
 }

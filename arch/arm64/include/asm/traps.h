@@ -55,6 +55,7 @@ extern bool undef_unaligned_ok;
 bool undef_aligned(u32 insn, unsigned long addr);
 void undef_fault(unsigned long addr, unsigned long flags);
 bool undef_patch_text(struct pt_regs *regs, u32 insn, u32 replacement);
+void undef_run_again(struct pt_regs *regs);
 
 void force_signal_inject(int signal, int code, unsigned long address, unsigned long err);
 void arm64_notify_segfault(unsigned long addr);

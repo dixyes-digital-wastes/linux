@@ -21,6 +21,7 @@
 #define LSE_STP_PRE	0xa9bf03e0	/* stp x0, x0, [sp, #-16]! */
 #define LSE_LDP_POST	0xa8c103e0	/* ldp x0, x0, [sp], #16 */
 #define LSE_B		0x14000000	/* b 0 */
+#define LSE_B_MASK	0xfc000000	/* b, and not bl or b.cond */
 #define LSE_CBNZ_W	0x35000000	/* cbnz w0, 0 */
 #define LSE_CBNZ_X	0xb5000000	/* cbnz x0, 0 */
 #define LSE_DMB_ISH	0xd5033bbf	/* dmb ish */
