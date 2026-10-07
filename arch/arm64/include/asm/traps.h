@@ -31,6 +31,12 @@ static inline bool try_emulate_rcpc(struct pt_regs *regs, u32 insn)
 }
 #endif /* CONFIG_ARM64_RCPC_EMULATION */
 
+/* shared between the emulations of the undefined instructions at EL0 */
+extern bool undef_unaligned_ok;
+bool undef_aligned(u32 insn, unsigned long addr);
+void undef_fault(unsigned long addr, unsigned long flags);
+bool undef_patch_text(struct pt_regs *regs, u32 insn, u32 replacement);
+
 void force_signal_inject(int signal, int code, unsigned long address, unsigned long err);
 void arm64_notify_segfault(unsigned long addr);
 void arm64_force_sig_fault(int signo, int code, unsigned long far, const char *str);

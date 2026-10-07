@@ -52,6 +52,7 @@ obj-$(CONFIG_KGDB)			+= kgdb.o
 obj-$(CONFIG_EFI)			+= efi.o efi-rt-wrapper.o
 obj-$(CONFIG_PCI)			+= pci.o
 obj-$(CONFIG_ARMV8_DEPRECATED)		+= armv8_deprecated.o
+obj-$(CONFIG_ARM64_UNDEF_EMULATION)	+= undef_patch.o
 obj-$(CONFIG_ARM64_RCPC_EMULATION)	+= rcpc_emul.o
 obj-$(CONFIG_ACPI)			+= acpi.o
 obj-$(CONFIG_ACPI_NUMA)			+= acpi_numa.o
