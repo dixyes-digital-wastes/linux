@@ -22,6 +22,9 @@
 #include <asm/sysreg.h>
 #include <asm/traps.h>
 
+/* How many times a fault that takes the lock away is retried */
+#define UNDEF_PATCH_TRIES	8
+
 /*
  * Whether an unaligned atomic access is allowed here, which is what
  * ID_AA64MMFR2_EL1.AT reports: without ARMv8.4-LSE, an atomic access and a
@@ -94,10 +97,11 @@ bool undef_patch_text(struct pt_regs *regs, u32 insn, u32 replacement)
 	bool patched = false;
 	void *kaddr;
 	int locked;
+	int tries;
 	long ret;
 
 	mmap_read_lock(current->mm);
-	for (;;) {
+	for (tries = 0; tries < UNDEF_PATCH_TRIES; tries++) {
 		vma = vma_lookup(current->mm, pc);
 		if (!vma || !(vma->vm_flags & VM_EXEC) ||
 		    (vma->vm_flags & VM_SHARED)) {
@@ -110,7 +114,22 @@ bool undef_patch_text(struct pt_regs *regs, u32 insn, u32 replacement)
 					    gup_flags, &page, &locked);
 		if (locked)
 			break;
-		/* the mapping may have been replaced while the page faulted */
+
+		/*
+		 * The lock is dropped around the fault that makes the page
+		 * writable, and a signal taken while it faults can leave it
+		 * dropped: that is what handing back unlocked as zero says.
+		 * Take it again, because the mapping above is only good
+		 * under it, and give up rather than spin if it keeps
+		 * happening
+		 */
+		mmap_read_lock(current->mm);
+	}
+
+	if (tries == UNDEF_PATCH_TRIES) {
+		mmap_read_unlock(current->mm);
+
+		return false;
 	}
 
 	if (ret == 1) {
