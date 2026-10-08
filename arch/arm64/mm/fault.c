@@ -988,9 +988,13 @@ void do_mem_abort(unsigned long far, unsigned long esr, struct pt_regs *regs)
 
 	/*
 	 * A fault from the block an LSE atomic site was replaced with: the
-	 * operation has not been made, and is made here in place of it
+	 * operation has not been made, and is made here in place of it. A
+	 * block is only ever made for a site that trapped, which an LSE
+	 * instruction cannot do where the machine has them, and looking for
+	 * one costs the mapping lock on every fault otherwise
 	 */
-	if (lse_block_fault(esr, regs))
+	if (!cpus_have_final_cap(ARM64_HAS_LSE_ATOMICS) &&
+	    lse_block_fault(esr, regs))
 		return;
 
 	if (!inf->fn(far, esr, regs))
